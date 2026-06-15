@@ -37,10 +37,43 @@ func (h *Handler) ProcessConnectionRegistration(w http.ResponseWriter, req *http
 		writeMeshkitError(w, ErrRetrieveUserToken(err), http.StatusInternalServerError)
 		return
 	}
-	err = json.NewDecoder(req.Body).Decode(&connectionRegisterPayload)
+	bodyBytes, err := io.ReadAll(req.Body)
+	if err != nil {
+		writeMeshkitError(w, models.ErrUnmarshal(err, "connection registration payload body"), http.StatusBadRequest)
+		return
+	}
+	err = json.Unmarshal(bodyBytes, &connectionRegisterPayload)
 	if err != nil {
 		writeMeshkitError(w, models.ErrUnmarshal(err, "connection registration payload"), http.StatusBadRequest)
 		return
+	}
+
+	// Bridge logic for canonical v1beta3 connection payload
+	var rawPayload map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &rawPayload); err == nil {
+		if config, ok := rawPayload["configuration"]; ok {
+			if connectionRegisterPayload.MetaData == nil {
+				connectionRegisterPayload.MetaData = make(map[string]interface{})
+			}
+			if configMap, ok := config.(map[string]interface{}); ok {
+				for k, v := range configMap {
+					if k == "secret" {
+						if connectionRegisterPayload.CredentialSecret == nil {
+							connectionRegisterPayload.CredentialSecret = make(map[string]interface{})
+						}
+						if secretMap, ok := v.(map[string]interface{}); ok {
+							for sk, sv := range secretMap {
+								connectionRegisterPayload.CredentialSecret[sk] = sv
+							}
+						} else {
+							connectionRegisterPayload.CredentialSecret["secret"] = v
+						}
+					} else {
+						connectionRegisterPayload.MetaData[k] = v
+					}
+				}
+			}
+		}
 	}
 
 	eventBuilder := events.NewEvent().ActedUpon(userUUID).WithCategory("connection").WithAction("update").FromSystem(*h.SystemID).FromUser(userUUID).WithDescription("Failed to interact with the connection.")
