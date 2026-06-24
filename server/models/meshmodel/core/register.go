@@ -79,10 +79,16 @@ func RegisterK8sMeshModelComponents(provider *models.Provider, _ context.Context
 		isRegistranError, isModelError, err = reg.RegisterEntity(connection.Connection{
 			Kind:     "kubernetes",
 			Type:     "registry",
+			Name:     ctxName,
+			Status:   "discovered",
 			Metadata: k8sContext,
 		}, &c)
 		helpers.HandleError(connection.Connection{
-			Kind: "kubernetes"}, &c, err, isModelError, isRegistranError)
+			Kind:   "kubernetes",
+			Type:   "registry",
+			Name:   ctxName,
+			Status: "discovered",
+		}, &c, err, isModelError, isRegistranError)
 		count++
 	}
 	err = helpers.WriteLogsToFiles()
