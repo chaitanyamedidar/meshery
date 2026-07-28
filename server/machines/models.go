@@ -125,6 +125,39 @@ func (sm *StateMachine) getNextState(event EventType) (StateType, error) {
 	return DefaultState, ErrInvalidTransitionEvent(sm.CurrentState, event)
 }
 
+// settledStateForEvent maps a pure status-transition event to the state the
+// machine is in once that transition has completed successfully. Used to treat
+// a re-drive of the same status as an idempotent no-op (e.g. Connect while
+// already CONNECTED after kubeconfig import's Discovery chain finished).
+func settledStateForEvent(event EventType) (StateType, bool) {
+	switch event {
+	case Discovery:
+		return DISCOVERED, true
+	case Register:
+		return REGISTERED, true
+	case Connect:
+		return CONNECTED, true
+	case Disconnect:
+		return DISCONNECTED, true
+	case Ignore:
+		return IGNORED, true
+	case Delete:
+		return DELETED, true
+	case NotFound:
+		return NOTFOUND, true
+	default:
+		return DefaultState, false
+	}
+}
+
+// isIdempotentStatusEvent reports whether event is a no-op because the machine
+// is already in the settled state for that event. Real invalid transitions
+// (wrong event for a different state) still fail.
+func isIdempotentStatusEvent(current StateType, event EventType) bool {
+	settled, ok := settledStateForEvent(event)
+	return ok && current == settled
+}
+
 // Returns events.Event and error. The func invoking the SendEvent should handle the error and publish the event.
 // wherever possible use the userID and systemID from context as the events can be created from other comps or actors and not only user actors.
 // In cases when the event is received as part of some other event and not explicitly created by an actor, use the useID and systemID of the actor who initially invoked the machine.
@@ -151,6 +184,19 @@ func (sm *StateMachine) SendEvent(ctx context.Context, eventType EventType, payl
 	// It is needed after the loop to (a) skip the status update on an Exit event
 	// and (b) restrict failure de-duplication to the background Discovery path.
 	originalEventType := eventType
+
+	// Idempotent re-drive: callers (e.g. the connection wizard's connect-on-import
+	// PUT after addK8SConfig already ran Discovery→Connect) may request Connect
+	// when the machine is already CONNECTED. CONNECTED has no connect edge, so
+	// that used to surface as Error "Invalid status change requested to connect".
+	// The connection is already where the caller wants it — treat as success.
+	if isIdempotentStatusEvent(sm.CurrentState, eventType) {
+		event = events.NewEvent().WithDescription(fmt.Sprintf("%s connection already %s", sm.Name, sm.CurrentState)).FromSystem(*sysID).FromOwner(userUUID).ActedUpon(sm.ID).WithCategory("connection").WithAction("update").WithMetadata(map[string]interface{}{
+			"previousStatus": sm.CurrentState,
+			"currentStatus":  sm.CurrentState,
+		}).WithSeverity(events.Informational).Build()
+		return event, nil
+	}
 
 	// failureErr and failureEvent capture the FIRST genuine failure inside the
 	// transition loop, together with the Error event built for it. Two sources:

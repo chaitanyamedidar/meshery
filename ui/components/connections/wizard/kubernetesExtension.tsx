@@ -359,28 +359,26 @@ const kubernetesReviewStep: WizardStep = {
       ctx.patch({ registrationResult: result ?? {} });
 
       const created = collectCreated(result ?? {});
+      // Upload already drives Discovery → Register → Connect on the server for
+      // newly saved contexts (addK8SConfig SendEvent(Discovery)). A second
+      // updateConnectionById({ status: connected }) races that FSM, often after
+      // it has settled in CONNECTED — CONNECTED has no connect edge, so the
+      // user sees a false Error: "Invalid status change requested to connect
+      // for connection type kubernetes." Trust the server path; only reflect
+      // connect-on-import in the receipt UI.
       const connectedIds = new Set(
         created
-          .filter((context) => context.alreadyConnected)
+          .filter((context) => {
+            if (!context.connectionId) {
+              return false;
+            }
+            if (context.alreadyConnected) {
+              return true;
+            }
+            return getConnectOnImport(ctx) && context.reachable;
+          })
           .map((context) => context.connectionId),
       );
-      if (getConnectOnImport(ctx)) {
-        const toConnect = created.filter(
-          (context) => context.reachable && !context.alreadyConnected && context.connectionId,
-        );
-        const outcomes = await Promise.allSettled(
-          toConnect.map((context) =>
-            ctx.services.updateConnectionById(context.connectionId, {
-              status: CONNECTION_STATES.CONNECTED,
-            }),
-          ),
-        );
-        toConnect.forEach((context, index) => {
-          if (outcomes[index].status === 'fulfilled') {
-            connectedIds.add(context.connectionId);
-          }
-        });
-      }
 
       // Per-context final state, mapped to the canonical connection states so
       // the receipt can reuse the shared status chip.

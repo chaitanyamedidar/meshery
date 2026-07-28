@@ -289,6 +289,61 @@ func TestSendEvent_InvalidTransitionPropagatesError(t *testing.T) {
 	}
 }
 
+// TestSendEvent_IdempotentConnectWhenAlreadyConnected covers the kubeconfig
+// wizard race: upload already ran Discovery→Register→Connect and left the
+// machine in CONNECTED; a follow-up user Connect (updateConnectionById status
+// connected) must not surface "Invalid status change requested to connect".
+func TestSendEvent_IdempotentConnectWhenAlreadyConnected(t *testing.T) {
+	log, err := logger.New("test", logger.Options{})
+	if err != nil {
+		t.Fatalf("failed to build test logger: %v", err)
+	}
+	connectionID, err := uuid.NewV4()
+	if err != nil {
+		t.Fatalf("failed to generate connection UUID: %v", err)
+	}
+
+	provider := &fakeProvider{status: connections.CONNECTED}
+	sm := &StateMachine{
+		ID:            core.Uuid(connectionID),
+		Name:          "kubernetes",
+		InitialState:  InitialState,
+		CurrentState:  CONNECTED,
+		PreviousState: REGISTERED,
+		Log:           log,
+		Provider:      provider,
+		States: States{
+			// Mirror production: CONNECTED has no Connect edge.
+			CONNECTED: State{
+				Events: Events{Disconnect: DISCONNECTED, Delete: DELETED},
+				Action: &stubAction{execNext: NoOp},
+			},
+			InitialState: State{
+				Events: Events{Connect: CONNECTED},
+				Action: nil,
+			},
+		},
+	}
+	ctx := newTestContext(t)
+
+	event, err := sm.SendEvent(ctx, Connect, nil)
+	if err != nil {
+		t.Fatalf("expected idempotent Connect on CONNECTED to succeed, got error %v", err)
+	}
+	if event == nil {
+		t.Fatal("expected a non-nil confirmation event for the idempotent Connect")
+	}
+	if event.Severity != events.Informational {
+		t.Fatalf("expected Informational severity, got %q", event.Severity)
+	}
+	if sm.CurrentState != CONNECTED {
+		t.Fatalf("expected machine to remain CONNECTED, got %q", sm.CurrentState)
+	}
+	if provider.updateCalls != 0 {
+		t.Fatalf("expected no status write on idempotent re-drive, got %d UpdateConnectionById calls", provider.updateCalls)
+	}
+}
+
 // TestSendEvent_TransitionErrorOnDiscoveryDeDuplicated guards the anti-spam
 // gate for transition errors on the background Discovery path: a mid-loop
 // transition error (a successful action emitting an event with no edge from the
