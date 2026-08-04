@@ -125,32 +125,6 @@ func (sm *StateMachine) getNextState(event EventType) (StateType, error) {
 	return DefaultState, ErrInvalidTransitionEvent(sm.CurrentState, event)
 }
 
-// eventDesiredState maps a status-driving event to the state that means the
-// request is already satisfied. Used so a second "connect" against an already
-// CONNECTED machine is a success no-op instead of "Invalid status change
-// requested to connect" (issue #20993).
-//
-// Discovery is intentionally omitted: background rediscovery must re-run its
-// actions even when the machine is already DISCOVERED.
-func eventDesiredState(event EventType) (StateType, bool) {
-	switch event {
-	case Register:
-		return REGISTERED, true
-	case Connect:
-		return CONNECTED, true
-	case Disconnect:
-		return DISCONNECTED, true
-	case Ignore:
-		return IGNORED, true
-	case Delete:
-		return DELETED, true
-	case NotFound:
-		return NOTFOUND, true
-	default:
-		return DefaultState, false
-	}
-}
-
 // Returns events.Event and error. The func invoking the SendEvent should handle the error and publish the event.
 // wherever possible use the userID and systemID from context as the events can be created from other comps or actors and not only user actors.
 // In cases when the event is received as part of some other event and not explicitly created by an actor, use the useID and systemID of the actor who initially invoked the machine.
@@ -162,16 +136,6 @@ func (sm *StateMachine) SendEvent(ctx context.Context, eventType EventType, payl
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
 	var event *events.Event
-
-	// Idempotent status request: if the machine is already in the state this
-	// event would achieve, treat the call as a successful no-op. Callers that
-	// re-PUT {status: connected} after kubeconfig import (which itself cascades
-	// Discovery→Register→Connect) must not surface a false Error toast.
-	// Returns nil,nil so handlers that only publish on error stay quiet.
-	if desired, ok := eventDesiredState(eventType); ok && sm.CurrentState == desired {
-		sm.Log.Debugf("%s: already in %q, treating %q as no-op", sm.Name, desired, eventType)
-		return nil, nil
-	}
 
 	// invalidTransitionEvent builds the Error event for a fatal transition
 	// error. It must be constructed at the failure site — not once up front —

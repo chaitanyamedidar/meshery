@@ -447,6 +447,24 @@ func (h *Handler) UpdateConnectionById(w http.ResponseWriter, req *http.Request,
 		return
 	}
 
+	// Path ID is authoritative for partial PUTs that only send {status}.
+	connection.ID = connectionID
+
+	// Same-status is a no-op for the state machine (issue #20993): if the
+	// connection is already in the requested status, still persist any other
+	// field changes below, but do not re-drive SendEvent (e.g. Connect while
+	// already CONNECTED → false "Invalid status change requested" Error).
+	// Real status transitions keep notifying the machine; invalid transitions
+	// still surface as errors when the status actually changes.
+	statusUnchanged := false
+	if connection.Status != "" {
+		existing, _, gerr := provider.GetConnectionByID(token, connectionID)
+		if gerr == nil && existing != nil && existing.Status == connection.Status {
+			statusUnchanged = true
+			h.log.Debug(fmt.Sprintf("connection %s already in status %q; skipping state-machine notify", connectionID, connection.Status))
+		}
+	}
+
 	// A PUT here is a partial update (the UI's connect action sends only
 	// {status}); the provider's UpdateConnectionById backfills any omitted field
 	// from the persisted row so a partial payload never clobbers columns like
@@ -470,7 +488,7 @@ func (h *Handler) UpdateConnectionById(w http.ResponseWriter, req *http.Request,
 	description := fmt.Sprintf("Connection %s updated.", updatedConnection.Name)
 	eventBuilder = eventBuilder.WithDescription(description)
 
-	if connection.Status != "" {
+	if connection.Status != "" && !statusUnchanged {
 		event, _ := h.NotifySmOfConnectionStatusChange(req.Context(), userID, provider, token, connection)
 		_ = provider.PersistEvent(event, token)
 	}
@@ -564,8 +582,8 @@ func (h *Handler) NotifySmOfConnectionStatusChange(ctx context.Context, userID c
 			event, err := inst.SendEvent(detachedCtx, machines.EventType(helpers.StatusToEvent(status)), nil)
 			if err != nil {
 				h.log.Error(err)
-				// SendEvent guarantees a non-nil event on the error path; still
-				// guard so a misbehaving machine cannot panic the broadcaster.
+				// Guard nil: callers historically assumed a non-nil event on
+				// every error path; keep the broadcaster panic-safe.
 				if event != nil {
 					_ = provider.PersistEvent(*event, token)
 					h.config.EventBroadcaster.Publish(userID, event)
@@ -577,9 +595,6 @@ func (h *Handler) NotifySmOfConnectionStatusChange(ctx context.Context, userID c
 				smInstanceTracker.Remove(inst.ID)
 			}
 
-			// Already-in-desired-state is a success no-op (nil event): do not
-			// publish a second "connection changed" toast for a redundant PUT
-			// {status: connected} after import (issue #20993).
 			if event == nil {
 				return
 			}
