@@ -564,8 +564,12 @@ func (h *Handler) NotifySmOfConnectionStatusChange(ctx context.Context, userID c
 			event, err := inst.SendEvent(detachedCtx, machines.EventType(helpers.StatusToEvent(status)), nil)
 			if err != nil {
 				h.log.Error(err)
-				_ = provider.PersistEvent(*event, token)
-				h.config.EventBroadcaster.Publish(userID, event)
+				// SendEvent guarantees a non-nil event on the error path; still
+				// guard so a misbehaving machine cannot panic the broadcaster.
+				if event != nil {
+					_ = provider.PersistEvent(*event, token)
+					h.config.EventBroadcaster.Publish(userID, event)
+				}
 				return
 			}
 
@@ -573,6 +577,12 @@ func (h *Handler) NotifySmOfConnectionStatusChange(ctx context.Context, userID c
 				smInstanceTracker.Remove(inst.ID)
 			}
 
+			// Already-in-desired-state is a success no-op (nil event): do not
+			// publish a second "connection changed" toast for a redundant PUT
+			// {status: connected} after import (issue #20993).
+			if event == nil {
+				return
+			}
 			_ = provider.PersistEvent(*event, token)
 			h.config.EventBroadcaster.Publish(userID, event)
 		}(inst, connection.Status)

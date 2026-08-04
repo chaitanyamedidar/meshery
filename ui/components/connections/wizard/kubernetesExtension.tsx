@@ -360,28 +360,25 @@ const kubernetesReviewStep: WizardStep = {
       ctx.patch({ registrationResult: result ?? {} });
 
       const created = collectCreated(result ?? {});
+      // Upload already starts the kubernetes FSM (Discovery→Register→Connect) for
+      // newly saved contexts. Do not PUT {status: connected} again here: that
+      // races the in-flight machine and surfaces a false
+      // "Invalid status change requested to connect" Error when the connection
+      // is already CONNECTED (issue #20993). Treat reachable + connect-on-import
+      // (and server-reported already-connected) as connected for the receipt.
       const connectedIds = new Set(
         created
-          .filter((context) => context.alreadyConnected)
+          .filter((context) => {
+            if (!context.connectionId) {
+              return false;
+            }
+            if (context.alreadyConnected) {
+              return true;
+            }
+            return getConnectOnImport(ctx) && context.reachable;
+          })
           .map((context) => context.connectionId),
       );
-      if (getConnectOnImport(ctx)) {
-        const toConnect = created.filter(
-          (context) => context.reachable && !context.alreadyConnected && context.connectionId,
-        );
-        const outcomes = await Promise.allSettled(
-          toConnect.map((context) =>
-            ctx.services.updateConnectionById(context.connectionId, {
-              status: CONNECTION_STATES.CONNECTED,
-            }),
-          ),
-        );
-        toConnect.forEach((context, index) => {
-          if (outcomes[index].status === 'fulfilled') {
-            connectedIds.add(context.connectionId);
-          }
-        });
-      }
 
       // Per-context final state, mapped to the canonical connection states so
       // the receipt can reuse the shared status chip.

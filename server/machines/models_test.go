@@ -332,6 +332,59 @@ func TestSendEvent_TransitionErrorOnDiscoveryDeDuplicated(t *testing.T) {
 	}
 }
 
+// TestSendEvent_ConnectWhenAlreadyConnectedIsNoOp guards issue #20993: a second
+// Connect against a machine that is already CONNECTED must not emit
+// "Invalid status change requested to connect". Kubeconfig import cascades
+// Discovery→Register→Connect, and the wizard historically re-PUT {status:
+// connected} afterward; that redundant request must be a quiet success.
+func TestSendEvent_ConnectWhenAlreadyConnectedIsNoOp(t *testing.T) {
+	log, err := logger.New("test", logger.Options{})
+	if err != nil {
+		t.Fatalf("failed to build test logger: %v", err)
+	}
+	connectionID, err := uuid.NewV4()
+	if err != nil {
+		t.Fatalf("failed to generate connection UUID: %v", err)
+	}
+
+	provider := &fakeProvider{status: connections.CONNECTED}
+	sm := &StateMachine{
+		ID:            core.Uuid(connectionID),
+		Name:          "kubernetes",
+		InitialState:  InitialState,
+		CurrentState:  CONNECTED,
+		PreviousState: REGISTERED,
+		Log:           log,
+		Provider:      provider,
+		States: States{
+			CONNECTED: State{
+				// Mirrors the real k8s Connected() graph: no Connect edge.
+				Events: Events{Disconnect: DISCONNECTED, Delete: DELETED},
+				Action: &stubAction{execNext: NoOp},
+			},
+			DISCONNECTED: State{
+				Events: Events{Connect: CONNECTED},
+				Action: &stubAction{execNext: NoOp},
+			},
+		},
+	}
+	ctx := newTestContext(t)
+
+	event, err := sm.SendEvent(ctx, Connect, nil)
+	if err != nil {
+		t.Fatalf("expected already-connected Connect to be a no-op, got error %v", err)
+	}
+	if event != nil {
+		t.Fatalf("expected quiet no-op (nil event) when already connected, got %#v", event)
+	}
+	if sm.CurrentState != CONNECTED {
+		t.Fatalf("expected machine to stay CONNECTED, got %q", sm.CurrentState)
+	}
+	if provider.updateCalls != 0 {
+		t.Fatalf("expected no status write on no-op Connect, got %d UpdateConnectionById calls", provider.updateCalls)
+	}
+}
+
 // TestSendEvent_UserInitiatedFailureAlwaysPropagates guards the boundary of the
 // de-duplication gate: suppression is restricted to the background Discovery
 // path. A user-initiated event (here Connect) whose action fails must surface
