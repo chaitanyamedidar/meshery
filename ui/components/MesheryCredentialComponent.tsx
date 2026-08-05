@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Chip,
   CustomColumnVisibilityControl,
   DeleteIcon,
   IconButton,
+  PROMPT_VARIANTS,
   ResponsiveDataTable,
   styled,
   TableCell,
@@ -12,6 +13,7 @@ import {
   useTheme,
 } from '@sistent/sistent';
 import Modal from './shared/Modal/Modal';
+import _PromptComponent from './general/PromptComponent';
 import { CON_OPS, CoreConnectionKinds } from '../utils/Enum';
 import Moment from 'react-moment';
 import LoadingScreen from './shared/LoadingState/LoadingComponent';
@@ -76,12 +78,36 @@ interface ColumnMeta {
   sortDirection?: 'asc' | 'desc' | null;
 }
 
+const deleteCredentialModalContent = (name: string) => (
+  <>
+    <p>Are you sure you want to delete the following credential?</p>
+    <p>
+      Credential Name:{' '}
+      <i>
+        <b>{name}</b>
+      </i>
+    </p>
+    <p>
+      <b>Warning:</b> This action is irreversible and may break connections that use this
+      credential.
+    </p>
+  </>
+);
+
 const MesheryCredentialComponent: React.FC = () => {
   const { data: credentialsData, isLoading } = useGetCredentialsQuery();
   const [createCredential] = useCreateCredentialMutation();
   const [updateCredential] = useUpdateCredentialMutation();
   const [deleteCredential] = useDeleteCredentialMutation();
   const { connectionMetadataState } = useSelector((state: RootState) => state.ui);
+  const modalRef = useRef<{
+    show: (_options: {
+      title: string;
+      subtitle?: React.ReactNode;
+      primaryOption: string;
+      variant?: string;
+    }) => Promise<string>;
+  } | null>(null);
 
   const [formData, setFormData] = useState<CredentialFormData>({});
   const [credModal, setCredModal] = useState<CredentialModalState>({
@@ -293,14 +319,16 @@ const MesheryCredentialComponent: React.FC = () => {
         },
         customBodyRender: (_: unknown, tableMeta: MUIDataTableMeta) => {
           const credentials = credentialsData?.credentials || [];
-          const rowData = credentials[tableMeta.rowIndex] as { id: string } | undefined;
+          const rowData = credentials[tableMeta.rowIndex] as
+            | { id: string; name?: string }
+            | undefined;
           return (
             <ActionContainer>
               <Tooltip key={`delete_credential-${tableMeta.rowIndex}`} title="Delete Credential">
                 <IconButton
                   aria-label="delete"
-                  onClick={() =>
-                    handleSubmit({ type: CON_OPS.DELETE, id: rowData?.id || undefined })
+                  onClick={(ev) =>
+                    handleDeleteCredentialConfirm(ev, rowData?.id, rowData?.name || 'this credential')
                   }
                   size="large"
                 >
@@ -329,6 +357,26 @@ const MesheryCredentialComponent: React.FC = () => {
     draggableColumns: {
       enabled: true,
     },
+  };
+
+  const handleDeleteCredentialConfirm = async (
+    ev: React.MouseEvent,
+    id?: string,
+    name?: string,
+  ): Promise<void> => {
+    ev.stopPropagation();
+    if (!id || !modalRef.current) {
+      return;
+    }
+    const response = await modalRef.current.show({
+      title: 'Delete Credential',
+      subtitle: deleteCredentialModalContent(name || 'this credential'),
+      primaryOption: 'Delete',
+      variant: PROMPT_VARIANTS.DANGER,
+    });
+    if (response === 'Delete') {
+      await handleSubmit({ type: CON_OPS.DELETE, id });
+    }
   };
 
   // control the entire submit
@@ -441,6 +489,7 @@ const MesheryCredentialComponent: React.FC = () => {
         payload={{ type: credModal.actionType, id: credModal.id }}
         submitBtnText="Save"
       />
+      <_PromptComponent ref={modalRef} />
     </div>
   );
 };
