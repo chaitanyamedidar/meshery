@@ -257,14 +257,11 @@ export const useConnectionColumns = ({
             );
           },
           customBodyRender: (value, tableMeta) => {
-            // Skip nameless envs — id-as-label painted UUID/black chips.
             const cleanedEnvs =
-              value
-                ?.filter((environment) => environment?.id && String(environment?.name ?? '').trim())
-                .map((environment) => ({
-                  label: String(environment.name).trim(),
-                  value: environment.id,
-                })) || [];
+              value?.map((environment) => ({
+                label: environment.name,
+                value: environment.id,
+              })) || [];
 
             return (
               isEnvironmentsSuccess && (

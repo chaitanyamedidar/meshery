@@ -82,8 +82,9 @@ func (cp *ConnectionPersister) GetConnections(search, order string, page, pageSi
 		}
 
 		var envMappings []envWithConnID
+		// Require a matching environment so orphan mappings are not scanned as a zero-value row.
 		if err := cp.DB.Table("environment_connection_mappings").
-			Joins("LEFT JOIN environments ON environments.id = environment_connection_mappings.environment_id").
+			Joins("INNER JOIN environments ON environments.id = environment_connection_mappings.environment_id").
 			Select("environments.*, environment_connection_mappings.connection_id").
 			Where("environment_connection_mappings.connection_id IN ?", connectionIDs).
 			Find(&envMappings).Error; err != nil {
@@ -92,6 +93,10 @@ func (cp *ConnectionPersister) GetConnections(search, order string, page, pageSi
 
 		envsByConnID := make(map[core.Uuid][]*environments.EnvironmentData)
 		for i := range envMappings {
+			env := envMappings[i].EnvironmentData
+			if env.ID == uuid.Nil {
+				continue
+			}
 			connID := envMappings[i].ConnectionID
 			envsByConnID[connID] = append(envsByConnID[connID], &envMappings[i].EnvironmentData)
 		}
